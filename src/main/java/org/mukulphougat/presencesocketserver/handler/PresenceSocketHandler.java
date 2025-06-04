@@ -1,6 +1,7 @@
 package org.mukulphougat.presencesocketserver.handler;
 
 import lombok.extern.slf4j.Slf4j;
+import org.mukulphougat.presencesocketserver.constants.PresenceStatus;
 import org.mukulphougat.presencesocketserver.dto.UserActivityLog;
 import org.mukulphougat.presencesocketserver.service.JwtService;
 import org.mukulphougat.presencesocketserver.service.OutboxService;
@@ -11,6 +12,10 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -47,8 +52,9 @@ public class PresenceSocketHandler extends TextWebSocketHandler {
 
             UserActivityLog userActivityLog = new UserActivityLog();
             userActivityLog.setUserId(userId);
-            userActivityLog.setStatus("online");
-            userActivityLog.setStatus(Instant.now().toString());
+            userActivityLog.setStatus(PresenceStatus.ONLINE);
+            userActivityLog.setTimestamp(LocalDateTime.now(ZoneId.of("Asia/Kolkata"))
+                    .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
             outboxService.saveEvent("USER_ONLINE", userId.toString(), userActivityLog);
             log.info("User {} connected via WebSocket", userId);
         } catch (Exception e) {
@@ -67,8 +73,9 @@ public class PresenceSocketHandler extends TextWebSocketHandler {
 
             UserActivityLog userActivityLog = new UserActivityLog();
             userActivityLog.setUserId(userId);
-            userActivityLog.setStatus("offline");
-            userActivityLog.setStatus(Instant.now().toString());
+            userActivityLog.setStatus(PresenceStatus.OFFLINE);
+            userActivityLog.setTimestamp(LocalDateTime.now(ZoneId.of("Asia/Kolkata"))
+                    .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
             outboxService.saveEvent("USER_OFFLINE", userId.toString(), userActivityLog);
             log.info("User {} disconnected", userId);
         } catch (Exception e) {
