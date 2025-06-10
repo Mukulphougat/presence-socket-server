@@ -17,6 +17,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
@@ -27,7 +28,7 @@ public class PresenceSocketHandler extends TextWebSocketHandler {
     private final RedisPresenceService redisPresenceService;
 
     // Track active sessions if needed
-    private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    private final Map<String, Set<WebSocketSession>> sessions = new ConcurrentHashMap<>();
 
     public PresenceSocketHandler(JwtService jwtService, OutboxService outboxService, RedisPresenceService redisPresenceService) {
         this.jwtService = jwtService;
@@ -47,16 +48,25 @@ public class PresenceSocketHandler extends TextWebSocketHandler {
 
         try {
             String userId = jwtService.extractUserId(token);
-            redisPresenceService.markUserOnline(userId);
-            sessions.put(userId, session);
+            String sessionId = session.getId();
 
-            UserActivityLog userActivityLog = new UserActivityLog();
-            userActivityLog.setUserId(userId);
-            userActivityLog.setStatus(PresenceStatus.ONLINE);
-            userActivityLog.setTimestamp(LocalDateTime.now(ZoneId.of("Asia/Kolkata"))
-                    .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
-            outboxService.saveEvent("USER_ONLINE", userId.toString(), userActivityLog);
-            log.info("User {} connected via WebSocket", userId);
+            session.getAttributes().put("userId", userId);
+            session.getAttributes().put("sessionId", sessionId);
+
+            redisPresenceService.markSessionOnline(userId, sessionId);
+
+            // Emit USER_ONLINE only if this is the first session (presence key didn't exist before)
+            if (redisPresenceService.isUserOnline(userId) && redisPresenceService.markSessionOffline(userId, sessionId)) {
+                redisPresenceService.markSessionOnline(userId, sessionId); // re-add after check
+
+                UserActivityLog userActivityLog = new UserActivityLog();
+                userActivityLog.setUserId(userId);
+                userActivityLog.setStatus(PresenceStatus.ONLINE);
+                userActivityLog.setTimestamp(LocalDateTime.now(ZoneId.of("Asia/Kolkata"))
+                        .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+                outboxService.saveEvent("USER_ONLINE", userId, userActivityLog);
+                log.info("User {} connected via WebSocket", userId);
+            }
         } catch (Exception e) {
             log.error("JWT validation failed: {}", e.getMessage());
             session.close();
@@ -65,19 +75,25 @@ public class PresenceSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        String token = getTokenFromQuery(session);
         try {
-            String userId = jwtService.extractUserId(token);
-            redisPresenceService.markUserOffline(userId);
-            sessions.remove(userId);
+            String userId = (String) session.getAttributes().get("userId");
+            String sessionId = (String) session.getAttributes().get("sessionId");
 
-            UserActivityLog userActivityLog = new UserActivityLog();
-            userActivityLog.setUserId(userId);
-            userActivityLog.setStatus(PresenceStatus.OFFLINE);
-            userActivityLog.setTimestamp(LocalDateTime.now(ZoneId.of("Asia/Kolkata"))
-                    .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
-            outboxService.saveEvent("USER_OFFLINE", userId.toString(), userActivityLog);
-            log.info("User {} disconnected", userId);
+            if (userId == null || sessionId == null) return;
+
+            boolean isNowOffline = redisPresenceService.markSessionOffline(userId, sessionId);
+
+            if (isNowOffline) {
+                UserActivityLog userActivityLog = new UserActivityLog();
+                userActivityLog.setUserId(userId);
+                userActivityLog.setStatus(PresenceStatus.OFFLINE);
+                userActivityLog.setTimestamp(LocalDateTime.now(ZoneId.of("Asia/Kolkata"))
+                        .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+                outboxService.saveEvent("USER_OFFLINE", userId, userActivityLog);
+                log.info("User {} disconnected (last session)", userId);
+            } else {
+                log.info("User {} session {} disconnected, other sessions still active", userId, sessionId);
+            }
         } catch (Exception e) {
             log.error("Error cleaning up session: {}", e.getMessage());
         }
